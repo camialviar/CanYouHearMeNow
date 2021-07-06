@@ -1,2 +1,2 @@
 # CanYouHearMeNow
-This repository contains the code and datasets for the paper "Can you hear me now? Interpersonal coordination during remote communication using Zoom".
+This repository contains the code and datasets for the paper "Can you hear me now? Interpersonal coordination during remote communication using Zoom". The "Datasets" folder contains the spectral functions for the online and in person conversations, and also the file with the noise information. If you are interested in the raw data or have any questions, please email Camila Alviar at malviarguzman@ucmerced.edu.
