@@ -1,0 +1,514 @@
+---
+title: "ResidualizewithMean"
+author: "Camila"
+date: "6/3/2021"
+output: html_document
+---
+
+This code accompanies the paper "Can you hear me now? Interpersonal coordination during remote comunication using Zoom". The code loads the data frame with the spectral functions for each participant, residualizes the power spectra, and runs the different models to assess interpersonal convergence.  
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library('lme4') 
+library('lmerTest')
+library('simr')
+library('ggplot2') 
+library('tidyr')
+library('cowplot')
+library(scales)
+library(DescTools)
+library(dplyr)
+library(ggpubr)
+library(gridExtra)
+library(powerlmm)
+library(ggeffects)
+```
+
+#Residualizing with the mean power for each frequency to remove the mean pattern and avoid having correlations that come from just following the same pattern.
+
+#ONLINE DATASET
+
+```{r}
+
+AllDataWin3=read_csv("OnlineConversationPower.csv")
+noisePPComb=read_csv("NoiseperWindow.csv")
+
+#Get the power dataset in long form
+tempdbM=c(AllData3Win$PowerLMov,AllData3Win$PowerRMov)
+tempdbA=c(AllData3Win$PowerLAud,AllData3Win$PowerRAud)
+Freq2=as.factor(rep(AllData3Win$Freq,2))
+tempdb=tibble(tempdbM, tempdbA, Freq2)
+colnames(tempdb) = c('PowerMov', 'PowerAud', 'Freq')
+
+
+#Get the means for each frequency
+MeanFreq= tempdb %>% 
+            group_by(Freq) %>% 
+            summarize(meanPowerMov = mean(PowerMov),
+                      meanPowerAud = mean(PowerAud)
+                  )
+
+#Subtract each power from the mean for that frequency to 'residualize'.
+
+dyad= sort(unique(AllData3Win$Dyad))
+win=sort(unique(AllData3Win$Window))
+
+ResTemp=c()
+
+for(dd in dyad){
+  for(w in win){
+    remove(tempdb, ResLMov, ResRMov, ResLAud, ResRAud)
+    tempdb = subset(AllData3Win, Dyad==dd & Window==w) 
+    ResLMov = data.frame(tempdb$PowerLMov-MeanFreq$meanPowerMov)
+    ResRMov = data.frame(tempdb$PowerRMov-MeanFreq$meanPowerMov)
+    ResLAud = data.frame(tempdb$PowerLAud-MeanFreq$meanPowerAud)
+    ResRAud = data.frame(tempdb$PowerRAud-MeanFreq$meanPowerAud)
+    Res= cbind(ResLMov, ResRMov, ResLAud, ResRAud)
+    ResTemp = rbind(ResTemp, Res)
+  }
+}
+
+#Add differences to the main dataset
+colnames(ResTemp)=c('DifLMovST', 'DifRMovST', 'DifLAudST', 'DifRAudST')
+AllData3Win=cbind(AllData3Win,ResTemp)
+remove(ResTemp)
+
+#Create the long datasets for multimodal analysis
+ResMWin3=AllData3Win[,c(1,2,4, 10,11)]
+ResMWin3Long=pivot_longer(ResMWin3, cols= starts_with("Dif"), names_to="Participant", values_to = c("ResMov"))
+remove(ResMWin3)
+ResAWin3=AllData3Win[,c(1,2,4,12,13)]
+ResAWin3Long=pivot_longer(ResAWin3, cols= starts_with("Dif"), names_to="Participant", values_to = c("ResSound"))
+remove(ResAWin3)
+
+DiferencesLongWin3=cbind(ResMWin3Long, ResAWin3Long$ResSound)
+remove(ResMWin3Long, ResAWin3Long)
+colnames(DiferencesLongWin3)=c("Dyad", "Window", "Freq", "Participant", "DifMov","DifSound")  
+
+ID=c()
+for(i in seq(1,40,1)) {
+  ID=c(ID,rep(i,27))
+}
+
+DiferencesLongWin3=DiferencesLongWin3 %>% arrange(Dyad,Participant,Window,Freq)
+DiferencesLongWin3$Participant=as.factor(ID) 
+DiferencesLongWin3 = DiferencesLongWin3 %>% left_join(noisePPComb)
+
+#Dataset for crossmodal matching
+CrossModalDif=AllData3Win[,c(1,2,4,10,13)]
+temp=AllData3Win[,c(1,2,4,11,12)]
+colnames(CrossModalDif)=c('Dyad', 'Window', 'Freq', 'CDifMov', 'CDifAud')
+colnames(temp)=c('Dyad', 'Window', 'Freq', 'CDifMov', 'CDifAud')
+CrossModalDif=rbind(CrossModalDif, temp)
+remove(temp)
+
+CrossModalDif = CrossModalDif %>% left_join(noisePPComb)
+
+#Transforming Frequency into a high and low factor
+
+AllData3Win= AllData3Win %>% mutate(FreqHL=if_else(as.numeric(as.factor(Freq))<6, 1, 2)) 
+AllData3Win$FreqHL=as.factor(AllData3Win$FreqHL)
+
+DiferencesLongWin3 = DiferencesLongWin3 %>% mutate(FreqHL=if_else(as.numeric(as.factor(Freq))<6, 1, 2))
+DiferencesLongWin3$FreqHL = as.factor(DiferencesLongWin3$FreqHL)
+
+CrossModalDif= CrossModalDif %>% mutate(FreqHL=if_else(as.numeric(as.factor(Freq))<6, 1, 2)) 
+CrossModalDif$FreqHL= as.factor(CrossModalDif$FreqHL)
+
+MeanFreq= MeanFreq %>% mutate(FreqHL=if_else(as.numeric(as.factor(Freq))<6, 1, 2)) 
+```
+
+#Movement Matching
+
+```{r}
+MovMRes0=lmer(DifLMov~1
+              + (DifRMov-1|Dyad)
+              + (DifRMov-1|Window)
+                , data=AllData3Win)
+
+MovMRes1=lmer(DifLMov~DifRMov
+              + (DifRMov-1|Dyad)
+              + (DifRMov-1|Window)
+                , data=AllData3Win)
+
+
+anova(MovMRes0, MovMRes1)
+```
+
+```{r}
+
+MovMRes1=lmer(DifLMov~DifRMov
+              + (DifRMov-1|Dyad)
+              + (DifRMov-1|Window)
+                , data=AllData3Win)
+
+MovMRes2=lmer(DifLMov~DifRMov+DifRMov:FreqHL
+              + (DifRMov-1|Dyad)
+              + (DifRMov-1|Window)
+                , data=AllData3Win)
+
+anova(MovMRes1, MovMRes2)
+```
+
+Plotting the model predictions
+```{r}
+MovMRes1=lmer(DifLMov~DifRMov*FreqHL
+              + (DifRMov-1|Dyad)
+              + (DifRMov-1|Window)
+                , data=AllData3Win)
+
+pred.mm <- ggpredict(MovMRes1, terms=c("DifRMov","FreqHL"))
+colnames(pred.mm)=c("x", "predicted", "std.error","conf.low","conf.high","FreqHL")
+
+ggplot(pred.mm)+ #, size=FreqF)) +
+  geom_point(data=AllData3Win, aes(x=DifRMov, y=DifLMov), color="gray40", alpha=0.3, size=2, show.legend = FALSE) +
+  geom_line(data=cbind(AllData3Win, pred=predict(MovMRes1)), aes(x= DifRMov, y=pred, color=Dyad, shape=Window, linetype=FreqHL), alpha = 0.8, show.legend = FALSE)+
+  geom_ribbon(aes(x = x, ymin = conf.low, ymax = conf.high, group=FreqHL), 
+               fill = "lightgrey", alpha = 0.4)+
+  geom_line(aes(x=x, y = predicted, linetype=FreqHL), size=0.8)+
+  xlab("Movement Residuals Participant 1") +
+  ylab("Movement Residuals Participant 2")+
+  scale_linetype_discrete(name="Frequency", labels=c("Lower", "Higher"))+
+  coord_fixed(ratio=1)+
+  theme_cowplot()
+```
+
+Adding noise to the predictors to see if it changes the spectral matching
+
+```{r}
+MovMRes0=lmer(DifLMov~DifRMov
+                + (DifRMov-1|Dyad)
+                + (DifRMov-1|Window)
+                , data=AllData3Win)
+
+#Add Bothper as a predictor to see the effect of correlated noise, IndPer to see the effect of individual noise.
+
+MovMRes1=lmer(DifLMov~DifRMov+DifRMov:BothPer 
+                + (DifRMov-1|Dyad)
+                + (DifRMov-1|Window)
+                , data=AllData3Win)
+
+
+anova(MovMRes0, MovMRes1)
+```
+
+#Audio Matching
+
+```{r}
+
+AudMRes0=lmer(DifLAud~1
+                + (DifRAud-1|Dyad)
+                + (DifRAud-1|Window)
+                , data=AllData3Win)
+
+AudMRes1=lmer(DifLAud~DifRAud
+              + (DifRAud-1|Dyad)
+              + (DifRAud-1|Window)
+              , data=AllData3Win)
+
+
+anova(AudMRes0, AudMRes1)
+```
+
+```{r}
+
+AudMRes1=lmer(DifLAud~DifRAud
+              + (DifRAud-1|Dyad)
+              + (DifRAud-1|Window)
+              , data=AllData3Win)
+
+AudMRes2=lmer(DifLAud~DifRAud+DifRAud:FreqHL
+              + (DifRAud-1|Dyad)
+              + (DifRAud-1|Window)
+              , data=AllData3Win)
+
+anova(AudMRes1, AudMRes2)
+
+summary(AudMRes2)
+```
+Plotting the model predictions
+```{r}
+#Refit model with the full interaction and intercepts so that the prediction table is complete for the figure.
+
+AudMRes1=lmer(DifLAud~DifRAud*FreqHL
+              + (DifRAud-1|Dyad)
+              + (DifRAud-1|Window)
+              , data=AllData3Win)
+
+pred.mm <- ggpredict(AudMRes1, terms = c("DifRAud", "FreqHL"))
+
+
+ggplot(pred.mm)+ #, size=FreqF)) +
+  geom_point(data=AllData3Win, aes(x=DifRAud, y=DifLAud), color="gray40",alpha=0.3, size=3, show.legend = FALSE) +
+  geom_line(data=cbind(AllData3Win, predAud=predict(AudMRes1)), aes(x= DifRAud, y=predAud, color=Dyad, shape=Window, linetype=FreqHL), show.legend = FALSE)+
+  geom_ribbon(aes(x = x, ymin = conf.low, ymax = conf.high, group=group), 
+               fill = "lightgrey", alpha = 0.4)+
+  geom_line(aes(x=x, y = predicted, linetype=group), color="black", size=0.8)+
+  xlab("Sound Residuals Participant Right") +
+  ylab("Sound Residuals Participant Left")+
+  scale_linetype_discrete(name="Frequency", labels=c("Lower", "Higher"))+
+  theme_cowplot()
+```
+
+Adding noise as a predictor
+
+```{r}
+AudMRes0=lmer(DifLAud~DifRAud
+              + (DifRAud-1|Dyad)
+              + (DifRAud-1|Window)
+              , data=AllData3Win)
+
+#Add Bothper as a predictor to see the effect of correlated noise, IndPer to see the effect of individual noise.
+
+AudMRes1=lmer(DifLAud~DifRAud+DifRAud:IndPer
+              + (DifRAud-1|Dyad)
+              + (DifRAud-1|Window)
+              , data=AllData3Win)
+
+anova(AudMRes0, AudMRes1)
+```
+
+#Multimodal Spectral Matching within subject
+
+```{r}
+MModalRes0=lmer(DifSound~1
+               + (DifMov-1|Participant)
+               + (DifMov-1|Window)
+               , data=DiferencesLongWin3)
+
+MModalRes1=lmer(DifSound~DifMov
+               + (DifMov-1|Participant)
+               + (DifMov-1|Window)
+               , data=DiferencesLongWin3)
+
+anova(MModalRes0, MModalRes1)
+```
+
+```{r}
+MModalRes1=lmer(DifSound~DifMov
+               + (DifMov-1|Participant)
+               + (DifMov-1|Window)
+               , data=DiferencesLongWin3)
+
+MModalRes2=lmer(DifSound~DifMov+DifMov:FreqHL
+               + (DifMov-1|Participant)
+               + (DifMov-1|Window)
+               , data=DiferencesLongWin3)
+
+
+anova(MModalRes1, MModalRes2)
+
+summary(MModalRes1)
+```
+
+Plotting the model predictions
+
+```{r}
+MModalRes1=lmer(DifSound~DifMov*FreqHL
+               + (DifMov-1|Participant)
+               + (DifMov-1|Window)
+               , data=DiferencesLongWin3)
+
+pred.mm <- ggpredict(MModalRes2, terms = c("DifMov", "FreqHL"))
+colnames(pred.mm)=c("x", "predicted", "std.error","conf.low","conf.high","FreqHL")
+
+ggplot(pred.mm)+ #, size=FreqF)) +
+  geom_point(data=DiferencesLongWin3, aes(x=DifMov, y=DifSound), color='gray40', alpha=0.3, size=2, show.legend = FALSE) +
+  geom_line(data=cbind(DiferencesLongWin3, pred=predict(MModalRes1)), aes(x=DifMov, y=pred, color=Participant, shape=Window, linetype=FreqHL), show.legend = FALSE)+
+  geom_ribbon(aes(x = x, ymin = conf.low, ymax = conf.high, group=FreqHL), 
+               fill = "lightgrey", alpha = 0.2)+
+  geom_line(aes(x=x, y = predicted, linetype=FreqHL), color="black", size=0.8)+
+  xlab("Movement Residuals") +
+  ylab("Sound Residuals")+
+  scale_linetype_discrete(name="Frequency", labels=c("Lower", "Higher"))+
+  coord_fixed(ratio=1)+
+  theme_cowplot()
+```
+
+Adding noise as a predictor
+
+```{r}
+MModalRes1=lmer(DifSound~DifMov
+               + (DifMov-1|Participant)
+               + (DifMov-1|Window)
+               , data=DiferencesLongWin3)
+
+MModalRes2=lmer(DifSound~DifMov+DifMov:BothPer
+               + (DifMov-1|Participant)
+               + (DifMov-1|Window)
+               , data=DiferencesLongWin3)
+
+anova(MModalRes1, MModalRes2)
+```
+
+#Crossmodal Matching
+
+```{r}
+CModalRes0=lmer(CDifAud~1
+                + (CDifMov-1|Dyad)
+                + (CDifMov-1|Window)
+                , data=CrossModalDif)
+
+CModalRes1=lmer(CDifAud~CDifMov
+                + (CDifMov-1|Dyad)
+                + (CDifMov-1|Window)
+                , data=CrossModalDif)
+
+anova(CModalRes0, CModalRes1)
+```
+
+```{r}
+CModalRes1=lmer(CDifAud~CDifMov
+                + (CDifMov-1|Dyad)
+                + (CDifMov-1|Window)
+                , data=CrossModalDif)
+
+CModalRes2=lmer(CDifAud~CDifMov+CDifMov:FreqHL
+                + (CDifMov-1|Dyad)
+                + (CDifMov-1|Window)
+                , data=CrossModalDif)
+
+anova(CModalRes1, CModalRes2)
+```
+
+Plotting the model predictions
+
+```{r}
+CModalRes1=lmer(CDifAud~CDifMov*FreqHL
+                + (CDifMov-1|Dyad)
+                + (CDifMov-1|Window)
+                , data=CrossModalDif)
+
+pred.mm <- ggpredict(CModalRes2, terms = c("CDifMov", "FreqHL"))
+colnames(pred.mm)=c("x", "predicted", "std.error","conf.low","conf.high","FreqHL")
+
+ggplot(pred.mm)+ #, size=FreqF)) +
+  geom_point(data=CrossModalDif, aes(x=CDifMov, y=CDifAud), color="gray40", alpha=0.3, size=2, show.legend = FALSE) +
+  geom_line(data=cbind(CrossModalDif, pred=predict(CModalRes2)), aes(x=CDifMov, y=pred, color=Dyad, shape=Window, linetype=FreqHL), show.legend = FALSE)+
+  geom_ribbon(aes(x = x, ymin = conf.low, ymax = conf.high, group=FreqHL), 
+               fill = "lightgrey", alpha = 0.4)+
+  geom_line(aes(x=x, y = predicted, linetype=FreqHL), color="black", size=0.8)+
+  xlab("Cross-Modal Movement Residuals") +
+  ylab("Cross-Modal Sound Residuals")+
+  scale_linetype_discrete(name="Frequency", labels=c("Lower", "Higher"))+
+  coord_fixed(ratio=1)+
+  theme_cowplot()
+```
+
+Adding noise as a predictor
+
+```{r}
+CModalRes1=lmer(CDifAud~CDifMov
+                + (CDifMov-1|Dyad)
+                + (CDifMov-1|Window)
+                , data=CrossModalDif)
+
+CModalRes2=lmer(CDifAud~CDifMov+CDifMov:BothPer
+                + (CDifMov-1|Dyad)
+                + (CDifMov-1|Window)
+                , data=CrossModalDif)
+
+anova(CModalRes1, CModalRes2)
+```
+
+#IN PERSON DATASET SCHNEIDER ET AL. (2020)
+
+```{r}
+#Load the dataset
+
+AllDataSaraWide=read_csv("InPersonConversationPower.csv")
+
+#Get the power dataset in long form
+tempdbA=c(AllDataSaraWide$PowerLAud,AllDataSaraWide$PowerRAud)
+Freq2=as.factor(rep(AllDataSaraWide$Freq,2))
+tempdb=tibble(tempdbA, Freq2)
+colnames(tempdb) = c('PowerAud', 'Freq')
+
+#Get the means for each frequency
+
+MeanFreqSara= tempdb %>% 
+            group_by(Freq) %>% 
+            summarize(meanPowerAud = mean(PowerAud))
+
+dyad= sort(unique(AllDataSaraWide$Dyad))
+win=sort(unique(AllDataSaraWide$Window))
+
+ResTemp=c()
+
+for(dd in dyad){
+  for(w in win){
+    remove(tempdb, ResLAud, ResRAud)
+    tempdb = subset(AllDataSaraWide, Dyad==dd & Window==w) 
+    ResLAud = data.frame(tempdb$PowerLAud-MeanFreqSara$meanPowerAud)
+    ResRAud = data.frame(tempdb$PowerRAud-MeanFreqSara$meanPowerAud)
+    Res= cbind(ResLAud, ResRAud)
+    ResTemp = rbind(ResTemp, Res)
+  }
+}
+
+colnames(ResTemp)=c('DifLAud', 'DifRAud')
+AllDataSaraWide=cbind(AllDataSaraWide,ResTemp)
+
+#Transforming frequency into High and Low factor
+
+AllDataSaraWide= AllDataSaraWide %>% mutate(FreqHL=if_else(as.numeric(as.factor(Freq))<6, 1, 2)) 
+AllDataSaraWide$FreqHL=as.factor(AllDataSaraWide$FreqHL)
+
+```
+
+# Audio matching
+
+```{r}
+AudMRes0=lmer(DifLAud~1
+                + (DifRAud-1|Dyad)
+                + (DifRAud-1|Window)
+                , data=AllDataSaraWide)
+
+AudMRes1=lmer(DifLAud~DifRAud
+              + (DifRAud-1|Dyad)
+              + (DifRAud-1|Window)
+              , data=AllDataSaraWide)
+
+
+anova(AudMRes0, AudMRes1)
+
+summary(AudMRes1)
+
+```
+
+```{r}
+AudMRes1=lmer(DifLAud~DifRAud
+              + (DifRAud-1|Dyad)
+              + (DifRAud-1|Window)
+              , data=AllDataSaraWide)
+
+AudMRes2=lmer(DifLAud~DifRAud+DifRAud:FreqHL
+              + (DifRAud-1|Dyad)
+              + (DifRAud-1|Window)
+              , data=AllDataSaraWide)
+
+anova(AudMRes1, AudMRes2)
+```
+
+Plotting the model predictions
+
+```{r}
+AudMRes1=lmer(DifLAud~DifRAud*FreqHL
+              + (DifRAud-1|Dyad)
+              + (DifRAud-1|Window)
+              , data=AllDataSaraWide)
+
+pred.mm <- ggpredict(AudMRes1, terms = c("DifRAud", "FreqHL"))
+
+
+ggplot(pred.mm)+ #, size=FreqF)) +
+  geom_point(data=AllDataSaraWide, aes(x=DifRAud, y=DifLAud), color="gray40",alpha=0.3, size=3, show.legend = FALSE) +
+  geom_line(data=cbind(AllDataSaraWide, predAud=predict(AudMRes1)), aes(x= DifRAud, y=predAud, color=Dyad, shape=Window, linetype=FreqHL), show.legend = FALSE)+
+  geom_ribbon(aes(x = x, ymin = conf.low, ymax = conf.high, group=group), 
+               fill = "lightgrey", alpha = 0.4)+
+  geom_line(aes(x=x, y = predicted, linetype=group), color="black", size=0.8)+
+  xlab("Sound Residuals Participant Right") +
+  ylab("Sound Residuals Participant Left")+
+  scale_linetype_discrete(name="Frequency", labels=c("Lower", "Higher"))+
+  theme_cowplot()
+```
